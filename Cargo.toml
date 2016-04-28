@@ -1,0 +1,21 @@
+[package]
+name = "es-reindex-rs"
+version = "0.1.0"
+authors = ["Paul Grandperrin <paul.grandperrin@gmail.com>"]
+
+[profile.release]
+opt-level = 3
+debug = false
+lto = true
+debug-assertions = false
+rpath = false
+
+[dependencies]
+serde = "*"
+serde_json = {version = "*", path = "../json/json"}
+hyper = {version = "*", features = [], default-features = false}
+log = "*"
+env_logger = "*"
+serde_macros = "*"
+sha1 = "*"
+data-encoding = "*"
