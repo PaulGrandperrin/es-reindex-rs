@@ -363,82 +363,10 @@ fn reindex_shard(cfg: Arc<Config>, shard: u32) {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct Person {
-    name: String
-}
-// use std::char;
-
 static COUNTER_INDEXED_DOC: AtomicUsize = ATOMIC_USIZE_INIT;
 
 fn main() {
-/*
-    let c = match 0xDC51 { // FIRST BYTE
-        0xDC00 ... 0xDFFF => {
-            panic!("LoneLeadingSurrogateInHexEscape");
-        }
-
-        // Non-BMP characters are encoded as a sequence of
-        // two hex escapes, representing UTF-16 surrogates.
-        n1 @ 0xD800 ... 0xDBFF => {
-            println!("NON BMP");
-            match (Some(b'\\'), Some(b'u')) {
-                (Some(b'\\'), Some(b'u')) => (),
-                _ => {
-                    panic!("UnexpectedEndOfHexEscape");
-                }
-            }
-
-            let n2 = 0xDC51; // SECOND BYTE
-
-            if n2 < 0xDC00 || n2 > 0xDFFF {
-                panic!("LoneLeadingSurrogateInHexEscape");
-            }
-
-            let n = (((n1 - 0xD800) as u32) << 10 |
-                      (n2 - 0xDC00) as u32) + 0x1_0000;
-
-            match char::from_u32(n as u32) {
-                Some(c) => c,
-                None => {
-                    panic!("InvalidUnicodeCodePoint");
-                }
-            }
-        }
-
-        n => {
-            match char::from_u32(n as u32) {
-                Some(c) => c,
-                None => {
-                    panic!("InvalidUnicodeCodePoint");
-                }
-            }
-        }
-    };
-
-    // FIXME: this allocation is required in order to be compatible with stable
-    // rust, which doesn't support encoding a `char` into a stack buffer.
-    println!("{:?}", c);
-
-    return; */
-    /*
-    //let data: Value = serde_json::from_str(r#"{"foo": "1:῿ 2:🿿 3: 4:👑 5:ÿ"}"#).unwrap();
-    let data: Value = serde_json::from_str(r#"{"foo": "1:῿ 2:🿿 3: 4:👑 5:ÿ 6:\uD83D\uDC51\uDC51END \\u06Jfsdhjk"}"#).unwrap();
-    let foo = data.as_object().ok_or("item not an object").unwrap().get("foo").ok_or("foo not found").unwrap().as_string().ok_or("foo is not a string").unwrap();
-    println!("{:?}", foo);
-    println!("{}", foo);
-    println!("{}",serde_json::to_string(&foo).unwrap());
-
-    return;
-
-    let a=Person{name: r#"foo": "1:῿ 2:🿿 3: 4:👑 5:ÿ "#.to_string()};
-    println!("{}",serde_json::to_string(&a).unwrap());
-    return;
-    */
     env_logger::init().unwrap();
-
-
-
     let cfg = Arc::new(Config::new());
 
     let mut reindex_threads = Vec::new();
@@ -458,48 +386,4 @@ fn main() {
     info!("main thread finished");
 
     return;
-
-    /*
-    let json = b"{\"foo\": 13, \"bar\": \"\x03baz\xe2\x88\"}";
-    let json_str = String::from_utf8_lossy(json);
-    let data: Value = serde_json::from_str(&json_str).unwrap();
-    println!("data: {:?}", data);
-    // data: {"bar":"baz","foo":13}
-    println!("object? {}", data.is_object());
-    // object? true
-
-    let obj = data.as_object().unwrap();
-    let foo = obj.get("foo").unwrap();
-
-    println!("array? {:?}", foo.as_array());
-    // array? None
-    println!("u64? {:?}", foo.as_u64());
-    // u64? Some(13u64)
-
-    for (key, value) in obj.iter() {
-        println!("{}: {}", key, match *value {
-            Value::U64(v) => format!("{} (u64)", v),
-            Value::String(ref v) => format!("{} (string)", v),
-            _ => format!("other")
-        });
-    }
-    */
-    // bar: baz (string)
-    // foo: 13 (u64)
 }
-
-
-/*
-
-FIX Inhano truncate
-Validate rust truncate
-
-allow reindex from provided scroll_id
-allow reindex from multiple shards in parallele
-
-better handle bulk error logging
-
-
-
-
-*/
