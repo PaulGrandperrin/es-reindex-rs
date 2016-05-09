@@ -22,6 +22,7 @@ use std::sync::mpsc::sync_channel;
 use std::thread;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering, ATOMIC_USIZE_INIT};
+use std::time::Duration;
 
 
 struct Config {
@@ -83,9 +84,25 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSen
     let mut fannout = 0;
 
     // get ES scroll id
-    debug!("requesting scroll_id");
     let url = format!("http://{}:{}/{}/_search?scroll={}&search_type=scan&preference=_shards:{};_local&size={}&version", cfg.source_host, cfg.source_port, cfg.source_index, cfg.scroll_timeout, shard, cfg.bulk_size);
-    let mut http_conn = client.post(&url).header(Connection::keep_alive()).body(&cfg.request).send().unwrap();
+    let mut http_conn;
+
+    // loop until the http request succeed
+    loop {
+        debug!(target: "scan_and_scroll", "shard {: >3} - requesting scroll_id", shard);
+        match client.post(&url).header(Connection::keep_alive()).body(&cfg.request).send() {
+            Ok(h) => {
+                http_conn = h;
+                break;
+            },
+            Err(e) => {
+                warn!(target: "scan_and_scroll", "shard {: >3} - http error: {:?}", shard, e);
+                debug!(target: "scan_and_scroll", "shard {: >3} - sleeping 5 seconds", shard);
+                thread::sleep(Duration::from_secs(5));
+            }
+        }
+    }
+
     http_conn.read_to_end(&mut buf).map_err(|e| e.description().to_string()).unwrap();
     let data: Value = serde_json::from_str(&String::from_utf8_lossy(&buf)).unwrap();
     buf.clear();
@@ -94,20 +111,34 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSen
         Value::String(ref s) => s.clone(),
         _ => panic!("_scroll_id is not a string")
     };
-    info!("got scroll_id: {}", scroll_id);
+    info!(target: "scan_and_scroll", "shard {: >3} - got scroll_id: {}", shard, scroll_id);
 
     // scroll data
     let url = format!("http://{}:{}/_search/scroll?scroll={}", cfg.source_host, cfg.source_port, cfg.scroll_timeout);
     loop {
         // download data
-        debug!("requesting scan&scroll");
-        let mut http_conn = client.post(&url).header(Connection::keep_alive()).body(&scroll_id).send().unwrap();
-        debug!("downloading scan&scroll");
+        let mut http_conn;
+        // loop until the http request succeed
+        loop {
+            debug!(target: "scan_and_scroll", "shard {: >3} - requesting scan&scroll", shard);
+            match client.post(&url).header(Connection::keep_alive()).body(&scroll_id).send() {
+                Ok(h) => {
+                    http_conn = h;
+                    break;
+                },
+                Err(e) => {
+                    warn!(target: "scan_and_scroll", "shard {: >3} - http error: {:?}", shard, e);
+                    debug!(target: "scan_and_scroll", "shard {: >3} - sleeping 5 seconds", shard);
+                    thread::sleep(Duration::from_secs(5));
+                }
+            }
+        }
+
+        debug!(target: "scan_and_scroll", "shard {: >3} - downloading scan&scroll", shard);
         http_conn.read_to_end(&mut buf).map_err(|e| e.description().to_string()).unwrap();
-        debug!("processing scan&scroll");
+        debug!(target: "scan_and_scroll", "shard {: >3} - processing scan&scroll", shard);
         let data: Value = {
             let buf_utf8 = &String::from_utf8_lossy(&buf);
-            trace!("{:?}", buf_utf8);
             serde_json::from_str(buf_utf8).unwrap()
         };
         buf.clear();
@@ -178,7 +209,6 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSen
                 _version: version,
                 _version_type: "external"
             };
-            trace!("{:?}", source);
             WriteFmt::write_fmt(&mut action_string,
                 format_args!("{{\"index\":{}}}\n{}\n",
                     serde_json::to_string(&action).unwrap(),
@@ -189,7 +219,7 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSen
         }
 
         // send action list
-        debug!("sending scan&scroll to channel");
+        debug!(target: "scan_and_scroll", "shard {: >3} - sending scan&scroll to channel", shard);
         channels[fannout].send(actions).unwrap();
         fannout += 1;
         if fannout >= channels.len() {
@@ -197,12 +227,12 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSen
         }
     } // end loop
 
-    info!("scan and scroll thread finished");
+    info!(target: "scan_and_scroll", "shard {: >3} - scan and scroll thread finished", shard);
 
 }
 
 
-fn es_bulk_index_thread(cfg: Arc<Config>, chan: Receiver<Vec<String>>) {
+fn es_bulk_index_thread(cfg: Arc<Config>, chan: Receiver<Vec<String>>, shard: u32, thread: usize) {
     let client = Client::new();
     let mut body = String::new();
 
@@ -210,11 +240,11 @@ fn es_bulk_index_thread(cfg: Arc<Config>, chan: Receiver<Vec<String>>) {
     let url = format!("http://{}:{}/_bulk", cfg.target_host, cfg.target_port);
     loop {
         // receive action list
-        debug!("receiving bulk from channel");
+        debug!(target: "bulk_index", "shard {: >3}, thread {: >2} - receiving bulk from channel", shard, thread);
         let actions = match chan.recv() {
             Ok(actions) => actions,
             Err(_)      => {
-                info!("bulk indexation thread finished");
+                info!(target: "bulk_index", "shard {: >3}, thread {: >2} - bulk indexation thread finished", shard, thread);
                 return;
             }
         };
@@ -234,12 +264,25 @@ fn es_bulk_index_thread(cfg: Arc<Config>, chan: Receiver<Vec<String>>) {
             }
 
             // send bulk request
-            debug!("sending bulk request");
-            trace!("{}",bulk_req);
-            let mut http_conn = client.post(&url).header(Connection::keep_alive()).body(&bulk_req).send().unwrap();
+            let mut http_conn;
+            // loop until the http request succeed
+            loop {
+                debug!(target: "bulk_index", "shard {: >3}, thread {: >2} - requesting scan&scroll", shard, thread);
+                match client.post(&url).header(Connection::keep_alive()).body(&bulk_req).send() {
+                    Ok(h) => {
+                        http_conn = h;
+                        break;
+                    },
+                    Err(e) => {
+                        warn!(target: "bulk_index", "shard {: >3}, thread {: >2} - http error: {:?}", shard, thread, e);
+                        debug!(target: "bulk_index", "shard {: >3}, thread {: >2} - sleeping 5 seconds", shard, thread);
+                        thread::sleep(Duration::from_secs(5));
+                    }
+                }
+            }
 
             // parse response
-            debug!("receiving bulk request response");
+            debug!(target: "bulk_index", "shard {: >3}, thread {: >2} - receiving bulk request response", shard, thread);
             body.clear();
             http_conn.read_to_string(&mut body).map_err(|e| e.description().to_string()).unwrap();
             let data: Value = serde_json::from_str(&body).unwrap();
@@ -270,9 +313,9 @@ fn es_bulk_index_thread(cfg: Arc<Config>, chan: Receiver<Vec<String>>) {
                 } else {
                     to_retry = true;
                     if let Some(error) = item.get("error") {
-                        debug!("error {} on action\n\t{:?}\n\t{}", status, error, actions[index]);
+                        debug!(target: "bulk_index", "shard {: >3}, thread {: >2} - error {} on action\n\t{:?}\n\t{}", shard, thread, status, error, actions[index]);
                     } else {
-                        debug!("error {} on action\n\t{}", status, actions[index]);
+                        debug!(target: "bulk_index", "shard {: >3}, thread {: >2} - error {} on action\n\t{}", shard, thread, status, actions[index]);
                     }
                 }
 
@@ -286,7 +329,7 @@ fn es_bulk_index_thread(cfg: Arc<Config>, chan: Receiver<Vec<String>>) {
         }
 
         let count = COUNTER_INDEXED_DOC.fetch_add(actions.len(), Ordering::SeqCst);
-        info!("bulk request successful. indexed docs: {}", count + actions.len());
+        info!(target: "bulk_index", "shard {: >3}, thread {: >2} - bulk request successful. indexed docs: {}", shard, thread, count + actions.len());
     }
 }
 
@@ -300,18 +343,16 @@ fn reindex_shard(cfg: Arc<Config>, shard: u32) {
         receivers.push(receiver);
     }
 
-
-
     let cfg_scan = cfg.clone();
     let scan_thread = thread::spawn(move || {
         es_scan_and_scroll_thread(cfg_scan, shard, senders);
     });
 
     let mut bulk_threads = Vec::new();
-    for receiver in receivers {
+    for (i, receiver) in receivers.drain(0..).enumerate() {
         let cfg_bulk = cfg.clone();
         let bulk_thread = thread::spawn(move || {
-            es_bulk_index_thread(cfg_bulk, receiver);
+            es_bulk_index_thread(cfg_bulk, receiver, shard, i);
         });
         bulk_threads.push(bulk_thread);
     }
