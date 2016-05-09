@@ -1,13 +1,12 @@
 #![feature(custom_derive, plugin)]
 #![plugin(serde_macros)]
 #![feature(question_mark)]
-#![feature(start)]
 
+#[macro_use]
+extern crate log;
 extern crate serde;
 extern crate serde_json;
 extern crate hyper;
-#[macro_use]
-extern crate log;
 extern crate env_logger;
 extern crate sha1;
 extern crate data_encoding;
@@ -29,7 +28,7 @@ struct Config {
     source_host: String,
     source_port: u16,
     source_index: String,
-    source_shards: String,
+    source_shards: Vec<u32>,
     target_host: String,
     target_port: u16,
     target_index: String,
@@ -37,6 +36,7 @@ struct Config {
     bulk_size: usize,
     queue_len: usize,
     nb_sender_threads : usize,
+    request: String,
 }
 
 #[derive(Serialize)]
@@ -51,25 +51,31 @@ struct Action<'a> {
 impl Config {
     fn new() -> Config {
         let mut args = std::env::args();
+        if args.len() != 13 {
+            error!("usage: es-reindex source_host source_port source_index source_shards(comma separated) target_host target_port target_index scroll_timeout bulk_size queue_len nb_sender_threads request");
+            panic!("incorrect number of arguments: {} expected 13", args.len());
+        }
+
         let _ = args.next();
         Config {
             source_host :       args.next().unwrap(),
-            source_port :       args.next().unwrap().parse::<u16>().unwrap(),
+            source_port :       args.next().unwrap().parse::<u16>().expect("source_port is not a number"),
             source_index :      args.next().unwrap(),
-            source_shards :     args.next().unwrap(),
+            source_shards :     args.next().unwrap().split(',').map(|s| s.parse().expect("source_shard is not a number")).collect(),
             target_host :       args.next().unwrap(),
-            target_port :       args.next().unwrap().parse::<u16>().unwrap(),
+            target_port :       args.next().unwrap().parse::<u16>().expect("target_port is not a number"),
             target_index :      args.next().unwrap(),
             scroll_timeout :    args.next().unwrap(),
-            bulk_size :         args.next().unwrap().parse::<usize>().unwrap(),
-            queue_len :         args.next().unwrap().parse::<usize>().unwrap(),
-            nb_sender_threads : args.next().unwrap().parse::<usize>().unwrap(),
+            bulk_size :         args.next().unwrap().parse::<usize>().expect("bulk_size is not a number"),
+            queue_len :         args.next().unwrap().parse::<usize>().expect("queue_len is not a number"),
+            nb_sender_threads : args.next().unwrap().parse::<usize>().expect("nb_sender_threads is not a number"),
+            request:            args.next().unwrap(),
         }
     }
 }
 
 
-fn es_scan_and_scroll_thread(cfg: Arc<Config>, channels: Vec<SyncSender<Vec<String>>>) {
+fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSender<Vec<String>>>) {
     let client = Client::new();
     let mut buf = Vec::new();
     let mut m = sha1::Sha1::new();
@@ -78,8 +84,8 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, channels: Vec<SyncSender<Vec<Stri
 
     // get ES scroll id
     debug!("requesting scroll_id");
-    let url = format!("http://{}:{}/{}/_search?scroll={}&search_type=scan&preference=_shards:{};_local&size={}&version", cfg.source_host, cfg.source_port, cfg.source_index, cfg.scroll_timeout, cfg.source_shards, cfg.bulk_size);
-    let mut http_conn = client.post(&url).header(Connection::keep_alive()).send().unwrap();
+    let url = format!("http://{}:{}/{}/_search?scroll={}&search_type=scan&preference=_shards:{};_local&size={}&version", cfg.source_host, cfg.source_port, cfg.source_index, cfg.scroll_timeout, shard, cfg.bulk_size);
+    let mut http_conn = client.post(&url).header(Connection::keep_alive()).body(&cfg.request).send().unwrap();
     http_conn.read_to_end(&mut buf).map_err(|e| e.description().to_string()).unwrap();
     let data: Value = serde_json::from_str(&String::from_utf8_lossy(&buf)).unwrap();
     buf.clear();
@@ -284,11 +290,43 @@ fn es_bulk_index_thread(cfg: Arc<Config>, chan: Receiver<Vec<String>>) {
     }
 }
 
+fn reindex_shard(cfg: Arc<Config>, shard: u32) {
+    let mut senders   = Vec::new();
+    let mut receivers = Vec::new();
+
+    for _ in 0..cfg.nb_sender_threads {
+        let (sender, receiver) = sync_channel(cfg.queue_len);
+        senders.push(sender);
+        receivers.push(receiver);
+    }
+
+
+
+    let cfg_scan = cfg.clone();
+    let scan_thread = thread::spawn(move || {
+        es_scan_and_scroll_thread(cfg_scan, shard, senders);
+    });
+
+    let mut bulk_threads = Vec::new();
+    for receiver in receivers {
+        let cfg_bulk = cfg.clone();
+        let bulk_thread = thread::spawn(move || {
+            es_bulk_index_thread(cfg_bulk, receiver);
+        });
+        bulk_threads.push(bulk_thread);
+    }
+
+    scan_thread.join().unwrap();
+    for bulk_thread in bulk_threads {
+        bulk_thread.join().unwrap();
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Person {
     name: String
 }
-use std::char;
+// use std::char;
 
 static COUNTER_INDEXED_DOC: AtomicUsize = ATOMIC_USIZE_INIT;
 
@@ -358,43 +396,22 @@ fn main() {
     */
     env_logger::init().unwrap();
 
-    let args = std::env::args();
-    if args.len() != 12 {
-        error!("usage: es-reindex source_host source_port source_index source_shard target_host target_port target_index scroll_timeout bulk_size queue_len nb_sender_threads");
-        error!("incorrect number of arguments: {} expected 12", args.len());
-        return;
-    }
+
 
     let cfg = Arc::new(Config::new());
 
-    let mut senders   = Vec::new();
-    let mut receivers = Vec::new();
+    let mut reindex_threads = Vec::new();
 
-    for _ in 0..cfg.nb_sender_threads {
-        let (sender, receiver) = sync_channel(cfg.queue_len);
-        senders.push(sender);
-        receivers.push(receiver);
-    }
-
-
-
-    let cfg_scan = cfg.clone();
-    let scan_thread = thread::spawn(move || {
-        es_scan_and_scroll_thread(cfg_scan, senders);
-    });
-
-    let mut bulk_threads = Vec::new();
-    for receiver in receivers {
-        let cfg_bulk = cfg.clone();
-        let bulk_thread = thread::spawn(move || {
-            es_bulk_index_thread(cfg_bulk, receiver);
+    for i in cfg.source_shards.clone().into_iter() {
+        let cfg_reindex = cfg.clone();
+        let reindex_thread = thread::spawn(move || {
+            reindex_shard(cfg_reindex, i);
         });
-        bulk_threads.push(bulk_thread);
+        reindex_threads.push(reindex_thread);
     }
 
-    scan_thread.join().unwrap();
-    for bulk_thread in bulk_threads {
-        bulk_thread.join().unwrap();
+    for reindex_thread in reindex_threads {
+        reindex_thread.join().unwrap();
     }
 
     info!("main thread finished");
