@@ -160,6 +160,7 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSen
         let shards = json.get("_shards").ok_or("no field _shards").unwrap().as_object().ok_or("_shards is not an object").unwrap();
         if let Some(failures) = shards.get("failures") {
             warn!(target: "scan_and_scroll", "shard {: >3} - failures: {:?}", shard, failures);
+            COUNTER_FAILED_SHARDS.fetch_add(1, Ordering::SeqCst);
             break;
         }
 
@@ -335,7 +336,8 @@ fn es_bulk_index_thread(cfg: Arc<Config>, chan: Receiver<Vec<String>>, shard: u3
         }
 
         let count = COUNTER_INDEXED_DOC.fetch_add(actions.len(), Ordering::SeqCst);
-        info!(target: "bulk_index", "shard {: >3}, thread {: >2} - bulk request successful. indexed docs: {}", shard, thread, count + actions.len());
+        let failed_shards = COUNTER_FAILED_SHARDS.load(Ordering::SeqCst);
+        info!(target: "bulk_index", "shard {: >3}, thread {: >2} - bulk request successful. indexed docs: {} - failed shards: {}", shard, thread, count + actions.len(), failed_shards);
     }
 }
 
@@ -370,6 +372,7 @@ fn reindex_shard(cfg: Arc<Config>, shard: u32) {
 }
 
 static COUNTER_INDEXED_DOC: AtomicUsize = ATOMIC_USIZE_INIT;
+static COUNTER_FAILED_SHARDS: AtomicUsize = ATOMIC_USIZE_INIT;
 
 fn main() {
     env_logger::init().unwrap();
