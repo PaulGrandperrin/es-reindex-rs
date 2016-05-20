@@ -152,12 +152,20 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSen
         });
 
         // extract data
-        let hits = data.as_object().ok_or("json root is not an object").unwrap()
-                        .get("hits").ok_or("no field hits").unwrap().as_object().ok_or("hits is not an object").unwrap()
-                        .get("hits").ok_or("no field hits").unwrap().as_array().ok_or("hits is not an array").unwrap();
+        let json = data.as_object().ok_or("json root is not an object").unwrap();
+
+        let hits = json.get("hits").ok_or("no field hits").unwrap().as_object().ok_or("hits is not an object").unwrap()
+                       .get("hits").ok_or("no field hits").unwrap().as_array().ok_or("hits is not an array").unwrap();
+
+        let shards = json.get("_shards").ok_or("no field _shards").unwrap().as_object().ok_or("_shards is not an object").unwrap();
+        if let Some(failures) = shards.get("failures") {
+            warn!(target: "scan_and_scroll", "shard {: >3} - failures: {:?}", shard, failures);
+            break;
+        }
 
         // if no more data, exit loop
         if hits.len() == 0 {
+            info!(target: "scan_and_scroll", "shard {: >3} - scan and scroll thread finished", shard);
             break;
         }
 
@@ -226,8 +234,6 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSen
             fannout = 0;
         }
     } // end loop
-
-    info!(target: "scan_and_scroll", "shard {: >3} - scan and scroll thread finished", shard);
 
 }
 
