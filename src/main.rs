@@ -10,6 +10,7 @@ extern crate hyper;
 extern crate env_logger;
 extern crate sha1;
 extern crate data_encoding;
+extern crate crossbeam;
 
 use serde_json::Value;
 use hyper::Client;
@@ -23,6 +24,7 @@ use std::thread;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering, ATOMIC_USIZE_INIT};
 use std::time::Duration;
+use crossbeam::scope;
 
 
 struct Config {
@@ -351,24 +353,19 @@ fn reindex_shard(cfg: Arc<Config>, shard: u32) {
         receivers.push(receiver);
     }
 
-    let cfg_scan = cfg.clone();
-    let scan_thread = thread::spawn(move || {
-        es_scan_and_scroll_thread(cfg_scan, shard, senders);
-    });
-
-    let mut bulk_threads = Vec::new();
-    for (i, receiver) in receivers.drain(0..).enumerate() {
-        let cfg_bulk = cfg.clone();
-        let bulk_thread = thread::spawn(move || {
-            es_bulk_index_thread(cfg_bulk, receiver, shard, i);
+    crossbeam::scope(|scope| {
+        let cfg_scan = cfg.clone();
+        scope.spawn(move || {
+            es_scan_and_scroll_thread(cfg_scan, shard, senders);
         });
-        bulk_threads.push(bulk_thread);
-    }
 
-    scan_thread.join().unwrap();
-    for bulk_thread in bulk_threads {
-        bulk_thread.join().unwrap();
-    }
+        for (i, receiver) in receivers.drain(0..).enumerate() {
+            let cfg_bulk = cfg.clone();
+            scope.spawn(move || {
+                es_bulk_index_thread(cfg_bulk, receiver, shard, i);
+            });
+        }
+    });
 }
 
 static COUNTER_INDEXED_DOC: AtomicUsize = ATOMIC_USIZE_INIT;
@@ -378,19 +375,14 @@ fn main() {
     env_logger::init().unwrap();
     let cfg = Arc::new(Config::new());
 
-    let mut reindex_threads = Vec::new();
-
-    for i in cfg.source_shards.clone().into_iter() {
-        let cfg_reindex = cfg.clone();
-        let reindex_thread = thread::spawn(move || {
-            reindex_shard(cfg_reindex, i);
-        });
-        reindex_threads.push(reindex_thread);
-    }
-
-    for reindex_thread in reindex_threads {
-        reindex_thread.join().unwrap();
-    }
+    crossbeam::scope(|scope| {
+        for i in cfg.source_shards.clone().into_iter() {
+            let cfg_reindex = cfg.clone();
+            scope.spawn(move || {
+                reindex_shard(cfg_reindex, i);
+            });
+        }
+    });
 
     info!("main thread finished");
 
