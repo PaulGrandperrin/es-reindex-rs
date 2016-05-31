@@ -294,7 +294,13 @@ fn es_bulk_index_thread(cfg: Arc<Config>, chan: Receiver<Vec<String>>, shard: u3
             debug!(target: "bulk_index", "shard {: >3}, thread {: >2} - receiving bulk request response", shard, thread);
             body.clear();
             http_conn.read_to_string(&mut body).map_err(|e| e.description().to_string()).unwrap();
-            let data: Value = serde_json::from_str(&body).unwrap();
+            let data: Value = match serde_json::from_str(&body) {
+                Ok(d) => d,
+                Err(e) => {
+                    error!(target: "bulk_index", "shard {: >3}, thread {: >2} - invalid json from bulk request response: {:?}\n\t{:?}", shard, thread, e, body);
+                    continue;
+                }
+            };
 
             // check for errors
             let is_errors = data.as_object().ok_or("json root is not an object").unwrap()
