@@ -154,12 +154,12 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSen
         });
 
         // extract data
-        let json = data.as_object().ok_or("json root is not an object").unwrap();
+        let json = data.as_object().expect("json root is not an object");
 
-        let hits = json.get("hits").ok_or("no field hits").unwrap().as_object().ok_or("hits is not an object").unwrap()
-                       .get("hits").ok_or("no field hits").unwrap().as_array().ok_or("hits is not an array").unwrap();
+        let hits = json.get("hits").expect("no field hits").as_object().expect("hits is not an object")
+                       .get("hits").expect("no field hits").as_array().expect("hits is not an array");
 
-        let shards = json.get("_shards").ok_or("no field _shards").unwrap().as_object().ok_or("_shards is not an object").unwrap();
+        let shards = json.get("_shards").expect("no field _shards").as_object().expect("_shards is not an object");
         if let Some(failures) = shards.get("failures") {
             warn!(target: "scan_and_scroll", "shard {: >3} - failures: {:?}", shard, failures);
             COUNTER_FAILED_SHARDS.fetch_add(1, Ordering::SeqCst);
@@ -175,22 +175,22 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSen
         // construct action list
         let mut actions = Vec::<String>::new();
         for doc in hits {
-            let doc = doc.as_object().ok_or("doc not an object").unwrap();
+            let doc = doc.as_object().expect("doc not an object");
 
-            let version = doc.get("_version").ok_or("_version not found").unwrap().as_u64().ok_or("_version is not a number").unwrap();
-            let type_   = doc.get("_type").ok_or("_type not found").unwrap().as_string().ok_or("_type is not an string").unwrap();
-            //let id      = doc.get("_id").ok_or("_id not found").unwrap().as_string().ok_or("_id is not an string").unwrap();
-            let source  = doc.get("_source").ok_or("_source not found").unwrap().as_object().ok_or("_source is not an object").unwrap();
+            let version = doc.get("_version").expect("_version not found").as_u64().expect("_version is not a number");
+            let type_   = doc.get("_type").expect("_type not found").as_string().expect("_type is not an string");
+            //let id      = doc.get("_id").expect("_id not found").as_string().expect("_id is not an string");
+            let source  = doc.get("_source").expect("_source not found").as_object().expect("_source is not an object");
 
             /* BEGIN CAPITALISATION SPECIFIC CODE */
 
-            let doc_login  = source.get("login").ok_or("login not found").unwrap().as_string().ok_or("login is not a string").unwrap();
-            let doc_log  = source.get("log").ok_or("log not found").unwrap().as_string().ok_or("log is not a string").unwrap();
-            let doc_alias  = source.get("alias").map(|i| i.as_string().ok_or("alias is not a string").unwrap());
-            let doc_login_id  = source.get("loginId").map(|i| i.as_string().ok_or("loginId is not a string").unwrap());
-            let doc_source = source.get("source").ok_or("source not found").unwrap().as_string().ok_or("source is not a string").unwrap();
-            //let doc_date = source.get("date").ok_or("date not found").unwrap().as_string().ok_or("date is not a string").unwrap();
-            let doc_restriction_list = source.get("restrictionList").ok_or("restrictionList not found").unwrap().as_string().ok_or("restrictionList is not a string").unwrap();
+            let doc_login  = source.get("login").expect("login not found").as_string().expect("login is not a string");
+            let doc_log  = source.get("log").expect("log not found").as_string().expect("log is not a string");
+            let doc_alias  = source.get("alias").map(|i| i.as_string().expect("alias is not a string"));
+            let doc_login_id  = source.get("loginId").map(|i| i.as_string().expect("loginId is not a string"));
+            let doc_source = source.get("source").expect("source not found").as_string().expect("source is not a string");
+            //let doc_date = source.get("date").expect("date not found").as_string().expect("date is not a string");
+            let doc_restriction_list = source.get("restrictionList").expect("restrictionList not found").as_string().expect("restrictionList is not a string");
 
             m.reset();
             if let Some(alias) = doc_alias {
@@ -303,8 +303,8 @@ fn es_bulk_index_thread(cfg: Arc<Config>, chan: Receiver<Vec<String>>, shard: u3
             };
 
             // check for errors
-            let is_errors = data.as_object().ok_or("json root is not an object").unwrap()
-                            .get("errors").ok_or("no field errors").unwrap().as_boolean().ok_or("errors is not a boolean").unwrap();
+            let is_errors = data.as_object().expect("json root is not an object")
+                            .get("errors").expect("no field errors").as_boolean().expect("errors is not a boolean");
             if !is_errors {
                 // if no errors break early
                 break;
@@ -312,16 +312,16 @@ fn es_bulk_index_thread(cfg: Arc<Config>, chan: Receiver<Vec<String>>, shard: u3
             // there is some errors, check them
 
             // parse error items
-            let items = data.as_object().ok_or("json root is not an object").unwrap()
-                            .get("items").ok_or("no field items").unwrap().as_array().ok_or("items is not an array").unwrap();
+            let items = data.as_object().expect("json root is not an object")
+                            .get("items").expect("no field items").as_array().expect("items is not an array");
 
             // loop on error items
             let mut index = 0;
             let mut to_retry = false;
             for item in items {
                 // get status
-                let item = item.as_object().ok_or("item not an object").unwrap().get("index").ok_or("no field index").unwrap().as_object().ok_or("index is not an object").unwrap();
-                let status = item.get("status").ok_or("status not found").unwrap().as_u64().ok_or("status is not a number").unwrap();
+                let item = item.as_object().expect("item not an object").get("index").expect("no field index").as_object().expect("index is not an object");
+                let status = item.get("status").expect("status not found").as_u64().expect("status is not a number");
 
                 if status == 200 || status == 201 || status == 409 { // no error
                     to_insert_docs[index] = false;
