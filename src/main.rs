@@ -105,9 +105,15 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSen
         }
     }
 
-    http_conn.read_to_end(&mut buf).map_err(|e| e.description().to_string()).unwrap();
-    let data: Value = serde_json::from_str(&String::from_utf8_lossy(&buf)).unwrap();
     buf.clear();
+    http_conn.read_to_end(&mut buf).map_err(|e| e.description().to_string()).unwrap();
+    let data: Value = match serde_json::from_str(&String::from_utf8_lossy(&buf)) {
+        Ok(d) => d,
+        Err(e) => {
+            error!(target: "scan_and_scroll", "shard {: >3} - invalid json from scroll request response: {:?}\n\t{:?}", shard, e, String::from_utf8_lossy(&buf));
+            return;
+        }
+    };
     let scroll_id_v = data.as_object().unwrap().get("_scroll_id").unwrap();
     let mut scroll_id = match *scroll_id_v {
         Value::String(ref s) => s.clone(),
@@ -137,13 +143,17 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSen
         }
 
         debug!(target: "scan_and_scroll", "shard {: >3} - downloading scan&scroll", shard);
-        http_conn.read_to_end(&mut buf).map_err(|e| e.description().to_string()).unwrap();
-        debug!(target: "scan_and_scroll", "shard {: >3} - processing scan&scroll", shard);
-        let data: Value = {
-            let buf_utf8 = &String::from_utf8_lossy(&buf);
-            serde_json::from_str(buf_utf8).unwrap()
-        };
         buf.clear();
+        http_conn.read_to_end(&mut buf).map_err(|e| e.description().to_string()).unwrap();
+        let data: Value = match serde_json::from_str(&String::from_utf8_lossy(&buf)) {
+            Ok(d) => d,
+            Err(e) => {
+                error!(target: "scan_and_scroll", "shard {: >3} - invalid json from scroll request response: {:?}\n\t{:?}", shard, e, String::from_utf8_lossy(&buf));
+                return;
+            }
+        };
+
+        // TODO buf.shrink_to_fit()
 
         // extract new scroll id
         let scroll_id_v = data.as_object().unwrap().get("_scroll_id").unwrap();
@@ -243,7 +253,7 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSen
 
 fn es_bulk_index_thread(cfg: Arc<Config>, chan: Receiver<Vec<String>>, shard: u32, thread: usize) {
     let client = Client::new();
-    let mut body = String::new();
+    let mut buf = Vec::new();
 
     // loop on bulk stream
     let url = format!("http://{}:{}/_bulk", cfg.target_host, cfg.target_port);
@@ -292,15 +302,16 @@ fn es_bulk_index_thread(cfg: Arc<Config>, chan: Receiver<Vec<String>>, shard: u3
 
             // parse response
             debug!(target: "bulk_index", "shard {: >3}, thread {: >2} - receiving bulk request response", shard, thread);
-            body.clear();
-            http_conn.read_to_string(&mut body).map_err(|e| e.description().to_string()).unwrap();
-            let data: Value = match serde_json::from_str(&body) {
+            buf.clear();
+            http_conn.read_to_end(&mut buf).map_err(|e| e.description().to_string()).unwrap();
+            let data: Value = match serde_json::from_str(&String::from_utf8_lossy(&buf)) {
                 Ok(d) => d,
                 Err(e) => {
-                    error!(target: "bulk_index", "shard {: >3}, thread {: >2} - invalid json from bulk request response: {:?}\n\t{:?}", shard, thread, e, body);
+                    error!(target: "bulk_index", "shard {: >3}, thread {: >2} - invalid json from bulk request response: {:?}\n\t{:?}", shard, thread, e, String::from_utf8_lossy(&buf));
                     continue;
                 }
             };
+            // TODO buf.shrink_to_fit()
 
             // check for errors
             let is_errors = data.as_object().expect("json root is not an object")
