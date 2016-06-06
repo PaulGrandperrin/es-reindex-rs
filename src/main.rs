@@ -62,16 +62,16 @@ impl Config {
         let _ = args.next();
         Config {
             source_host :       args.next().unwrap(),
-            source_port :       args.next().unwrap().parse::<u16>().expect("source_port is not a number"),
+            source_port :       args.next().unwrap().parse().expect("source_port is not a number"),
             source_index :      args.next().unwrap(),
             source_shards :     args.next().unwrap().split(',').map(|s| s.parse().expect("source_shard is not a number")).collect(),
             target_host :       args.next().unwrap(),
-            target_port :       args.next().unwrap().parse::<u16>().expect("target_port is not a number"),
+            target_port :       args.next().unwrap().parse().expect("target_port is not a number"),
             target_index :      args.next().unwrap(),
             scroll_timeout :    args.next().unwrap(),
-            bulk_size :         args.next().unwrap().parse::<usize>().expect("bulk_size is not a number"),
-            queue_len :         args.next().unwrap().parse::<usize>().expect("queue_len is not a number"),
-            nb_sender_threads : args.next().unwrap().parse::<usize>().expect("nb_sender_threads is not a number"),
+            bulk_size :         args.next().unwrap().parse().expect("bulk_size is not a number"),
+            queue_len :         args.next().unwrap().parse().expect("queue_len is not a number"),
+            nb_sender_threads : args.next().unwrap().parse().expect("nb_sender_threads is not a number"),
             request:            args.next().unwrap(),
         }
     }
@@ -84,6 +84,7 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSen
     let mut m = sha1::Sha1::new();
     let mut digest = [0u8; 20];
     let mut fannout = 0;
+    let mut counter = 0u8;
 
     // get ES scroll id
     let url = format!("http://{}:{}/{}/_search?scroll={}&search_type=scan&preference=_shards:{};_local&size={}&version", cfg.source_host, cfg.source_port, cfg.source_index, cfg.scroll_timeout, shard, cfg.bulk_size);
@@ -153,7 +154,13 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSen
             }
         };
 
-        // TODO buf.shrink_to_fit()
+        // periodically shrink buffer to avoid wasting memory
+        if counter == 100 {
+            buf.shrink_to_fit();
+            counter = 0;
+        } else {
+            counter += 1;
+        }
 
         // extract new scroll id
         let scroll_id_v = data.as_object().unwrap().get("_scroll_id").unwrap();
@@ -254,6 +261,7 @@ fn es_scan_and_scroll_thread(cfg: Arc<Config>, shard: u32, channels: Vec<SyncSen
 fn es_bulk_index_thread(cfg: Arc<Config>, chan: Receiver<Vec<String>>, shard: u32, thread: usize) {
     let client = Client::new();
     let mut buf = Vec::new();
+    let mut counter = 0u8;
 
     // loop on bulk stream
     let url = format!("http://{}:{}/_bulk", cfg.target_host, cfg.target_port);
@@ -311,7 +319,14 @@ fn es_bulk_index_thread(cfg: Arc<Config>, chan: Receiver<Vec<String>>, shard: u3
                     continue;
                 }
             };
-            // TODO buf.shrink_to_fit()
+
+            // periodically shrink buffer to avoid wasting memory
+            if counter == 100 {
+                buf.shrink_to_fit();
+                counter = 0;
+            } else {
+                counter += 1;
+            }
 
             // check for errors
             let is_errors = data.as_object().expect("json root is not an object")
