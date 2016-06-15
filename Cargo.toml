@@ -12,7 +12,7 @@ rpath = false
 
 [dependencies]
 serde = "*"
-serde_json = {version = "*", path = "../json/json"}
+serde_json = {version = "*", path = "adapted-serde-json"}
 hyper = {version = "*", features = [], default-features = false}
 log = "*"
 env_logger = "*"
