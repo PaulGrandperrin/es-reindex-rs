@@ -329,44 +329,58 @@ fn es_bulk_index_thread(cfg: Arc<Config>, chan: Receiver<Vec<String>>, shard: u3
             }
 
             // check for errors
-            let is_errors = data.as_object().expect("json root is not an object")
-                            .get("errors").expect("no field errors").as_boolean().expect("errors is not a boolean");
-            if !is_errors {
-                // if no errors break early
-                break;
+            if let Some(err) = data.as_object().expect("json root is not an object").get("errors") {
+                if !err.as_boolean().expect("errors is not a boolean"){
+                    // if no errors break early
+                    break;
+                }
             }
+
             // there is some errors, check them
 
             // parse error items
-            let items = data.as_object().expect("json root is not an object")
-                            .get("items").expect("no field items").as_array().expect("items is not an array");
+            if let Some(items_value) = data.as_object().expect("json root is not an object").get("items") {
+                let items = items_value.as_array().expect("items is not an array");
+            
 
-            // loop on error items
-            let mut index = 0;
-            let mut to_retry = false;
-            for item in items {
-                // get status
-                let item = item.as_object().expect("item not an object").get("index").expect("no field index").as_object().expect("index is not an object");
-                let status = item.get("status").expect("status not found").as_u64().expect("status is not a number");
+                // loop on error items
+                let mut index = 0;
+                let mut to_retry = false;
+                for item in items {
+                    // get status
+                    let item = item.as_object().expect("item not an object").get("index").expect("no field index").as_object().expect("index is not an object");
+                    let status = item.get("status").expect("status not found").as_u64().expect("status is not a number");
 
-                if status == 200 || status == 201 || status == 409 { // no error
-                    to_insert_docs[index] = false;
-                } else {
-                    to_retry = true;
-                    if let Some(error) = item.get("error") {
-                        debug!(target: "bulk_index", "shard {: >3}, thread {: >2} - error {} on action\n\t{:?}\n\t{}", shard, thread, status, error, actions[index]);
-                    } else {
-                        debug!(target: "bulk_index", "shard {: >3}, thread {: >2} - error {} on action\n\t{}", shard, thread, status, actions[index]);
+                    if status == 200 || status == 201 || status == 409 { // no error
+                        to_insert_docs[index] = false;
+                    } else if status == 400 { // real error with document
+                        // don't try to reindex it but log the error
+                        to_insert_docs[index] = false;
+                        if let Some(error) = item.get("error") {
+                            warn!(target: "bulk_index", "shard {: >3}, thread {: >2} - error {} on document, skiping\n\t{:?}\n\t{}", shard, thread, status, error, actions[index]);
+                        } else {
+                            warn!(target: "bulk_index", "shard {: >3}, thread {: >2} - error {} on document, skiping\n\t{}", shard, thread, status, actions[index]);
+                        }
+                    } else { // probably an error with ES, retry injecting
+                        to_retry = true;
+                        if let Some(error) = item.get("error") {
+                            debug!(target: "bulk_index", "shard {: >3}, thread {: >2} - error {} on action\n\t{:?}\n\t{}", shard, thread, status, error, actions[index]);
+                        } else {
+                            debug!(target: "bulk_index", "shard {: >3}, thread {: >2} - error {} on action\n\t{}", shard, thread, status, actions[index]);
+                        }
                     }
+
+                    index += 1;
                 }
 
-                index += 1;
-            }
-
-            // if nothing to retry, break loop
-            if !to_retry {
-                break;
-            }
+                // if nothing to retry, break loop
+                if !to_retry {
+                    break;
+                }
+            } else {
+                // WTF is this response!, retry everything!
+                error!(target: "bulk_index", "shard {: >3}, thread {: >2} - WTF error {:?}", shard, thread, data);
+            } 
         }
 
         let count = COUNTER_INDEXED_DOC.fetch_add(actions.len(), Ordering::SeqCst);
